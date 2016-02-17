@@ -38,15 +38,16 @@ import std.typetuple : TypeTuple;
 		}
 		---
 */
-bool runUnitTests(COMPOSITES...)(TestResultWriter results)
+bool runUnitTests(COMPOSITES...)(TestResultWriter results, TestFilter filter=null)
 {
 	assert(!g_runner, "Running multiple unit tests concurrently is not supported.");
-	g_runner = new TestRunner(results);
+	if (filter is null)
+		filter = new DefaultTestFilter();
+	g_runner = new TestRunner(filter, results);
 	auto ret = g_runner.runUnitTests!COMPOSITES();
 	g_runner = null;
 	return ret;
 }
-
 
 /**
 	Emits a custom instrumentation value that will be stored in the unit test results.
@@ -87,6 +88,13 @@ interface TestResultWriter {
 	void beginTest(string name, string qualified_name);
 	void addScalar(Duration timestamp, string name, double value);
 	void endTest(Duration timestamp, Throwable error);
+}
+
+/**
+	Base interface for filtering which unittests to run.
+*/
+interface TestFilter {
+	bool shallRun(string name, string qualified_name);
 }
 
 
@@ -185,18 +193,28 @@ class JsonTestResultWriter : TestResultWriter {
 	}
 }
 
+private class DefaultTestFilter : TestFilter 
+{
+	bool shallRun(string _, string __)
+	{
+		return true;
+	}
+}
+
 private class TestRunner {
 	private {
 		Mutex m_mutex;
 		Condition m_condition;
+		TestFilter m_filter;
 		TestResultWriter m_results;
 		InstrumentStats m_baseStats;
 		bool m_running, m_quit, m_instrumentsReady;
 		StopWatch m_stopWatch;
 	}
 
-	this(TestResultWriter writer)
+	this(TestFilter filter, TestResultWriter writer)
 	{
+		m_filter = filter;
 		m_results = writer;
 		m_mutex = new Mutex;
 		m_condition = new Condition(m_mutex);
@@ -276,6 +294,10 @@ private class TestRunner {
 		foreach (att; __traits(getAttributes, test))
 			static if (is(typeof(att) == .name))
 				name = att.name;
+		if (!m_filter.shallRun(name, fullyQualifiedName!test))
+		{
+			return true;
+		}
 
 		// wait for instrumentation thread to get ready
 		synchronized (m_mutex)
